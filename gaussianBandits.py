@@ -12,15 +12,15 @@ class GaussianBandit:
     X_{i,t} ~ N(mu_i, sigma_i^2)
     """
     def __init__(self, means, sigmas):
-        self.true_means = np.array(means, dtype=float)
-        self.sigmas = np.array(sigmas, dtype=float)
+        self.true_means = np.array(means, dtype=float) # mean list
+        self.sigmas = np.array(sigmas, dtype=float) # stand. dev. list
         assert len(self.true_means) == len(self.sigmas)
-        self.K = len(self.true_means)
+        self.K = len(self.true_means) # number of arms
 
     def pull(self, arm):
         mu = self.true_means[arm]
         sigma = self.sigmas[arm]
-        return np.random.normal(mu, sigma)
+        return np.random.normal(mu, sigma) # continuous reward
 
 
 class NonStationaryGaussianBandit:
@@ -38,13 +38,13 @@ class NonStationaryGaussianBandit:
         self.switch_time = switch_time
         self.K = len(self.means_before)
 
-    def get_means(self, t):
+    def get_means(self, t): # choose correct means based on time
         return self.means_before if t < self.switch_time else self.means_after
 
-    def get_sigmas(self, t):
+    def get_sigmas(self, t): # choose correct s.d. based on time
         return self.sigmas_before if t < self.switch_time else self.sigmas_after
 
-    def pull(self, arm, t):
+    def pull(self, arm, t): # time-dependent
         means_t = self.get_means(t)
         sigmas_t = self.get_sigmas(t)
         return np.random.normal(means_t[arm], sigmas_t[arm])
@@ -66,7 +66,7 @@ class Policy(Protocol):
 class GaussianUCB:
     n_arms: int
     sigma: float
-    c: float = 1.0
+    c: float = 1.0 # exploration constant
 
     def __post_init__(self):
         self.counts = np.zeros(self.n_arms, dtype=int)
@@ -76,12 +76,13 @@ class GaussianUCB:
     def select_arm(self):
         self.t += 1
 
-        # play each arm once
+        # play each arm once initially
         for arm in range(self.n_arms):
             if self.counts[arm] == 0:
                 return arm
 
-        bonus = np.sqrt(2 * (self.sigma ** 2) * np.log(self.t) / self.counts)
+        # UCB index
+        bonus = np.sqrt(2 * (self.sigma ** 2) * np.log(self.t) / self.counts) # 2*\sigma^2 for variance
         ucb_values = self.estimates + self.c * bonus
         return int(np.argmax(ucb_values))
 
@@ -103,8 +104,7 @@ class ThompsonSamplingGaussian:
         self.counts = np.zeros(self.n_arms, dtype=int)
         self.sum_rewards = np.zeros(self.n_arms, dtype=float)
 
-    def _posterior_params(self):
-        # Compute posterior mean and variance for each arm.
+    def _posterior_params(self): # posterior for each arm
         n = self.counts
         S = self.sum_rewards
         sigma2 = self.sigma ** 2
@@ -112,16 +112,16 @@ class ThompsonSamplingGaussian:
         tau0 = 1.0 / self.v0
         tau = 1.0 / sigma2
 
+        # bayesian posterior
         post_prec = tau0 + n * tau
         v = 1.0 / post_prec # posterior variance
         m = v * (tau0 * self.m0 + tau * S)  # posterior mean
-
         return m, v
 
     def select_arm(self):
         m, v = self._posterior_params()
         samples = np.random.normal(m, np.sqrt(v))
-        return int(np.argmax(samples))
+        return int(np.argmax(samples)) # arm with highest sample
 
     def update(self, arm, reward):
         self.counts[arm] += 1
@@ -129,33 +129,25 @@ class ThompsonSamplingGaussian:
 
 
 
-def run_bandit(
-        bandit,
-        policy: Policy,
-        n_steps,
-        show = False,
-        algo_name: str | None = None,
-):
+def run_bandit(bandit, policy: Policy, n_steps, show=False, algo_name: str | None=None):
     """
     Run a bandit algorithm on a given environment and compute metrics.
     For both stationary (GaussianBandit) and non-stationary
     (NonStationaryGaussianBandit with .get_means(t)) cases.
     """
     K = bandit.K
-    arms = np.zeros(n_steps, dtype=int)
-    rewards = np.zeros(n_steps, dtype=float)
-    means_over_time = np.zeros((n_steps, K), dtype=float)
+    arms = np.zeros(n_steps, dtype=int) # arm pulled at each step
+    rewards = np.zeros(n_steps, dtype=float) # received reward at each step
+    means_over_time = np.zeros((n_steps, K), dtype=float) # true means
 
     # --- main interaction loop
     for t in range(n_steps):
         arm = policy.select_arm()
 
-        # both stationary and non-stationary bandits
-        try:
+        try: # non-stationary
             reward = bandit.pull(arm, t)
             means_t = bandit.get_means(t)
-        except TypeError:
-            # stationary bandit: no time argument
+        except TypeError: # stationary bandit
             reward = bandit.pull(arm)
             means_t = bandit.true_means
 
@@ -165,27 +157,22 @@ def run_bandit(
         rewards[t] = reward
         means_over_time[t, :] = means_t
 
-    # --- reward-based metrics
+    # metrics
     cumulative_rewards = np.cumsum(rewards)
     avg_reward = cumulative_rewards / np.arange(1, n_steps + 1)
 
-    # --- time-varying pseudo-regret
-    # best mean at each time
     best_means = means_over_time.max(axis=1)
-    # mean of the arm actually played at each time
     played_means = means_over_time[np.arange(n_steps), arms]
 
     instant_regret = best_means - played_means
     cumulative_regret = np.cumsum(instant_regret)
     avg_regret = cumulative_regret / np.arange(1, n_steps + 1)
 
-    # --- optimal arm statistics (time-varying optimal arm)
     best_arms = means_over_time.argmax(axis=1)
     is_optimal = (arms == best_arms)
     optimal_pull_fraction = is_optimal.mean()
     running_optimal_fraction = np.cumsum(is_optimal) / np.arange(1, n_steps + 1)
 
-    # --- arm usage + empirical means
     pull_counts = np.bincount(arms, minlength=K)
     reward_sums = np.bincount(arms, weights=rewards, minlength=K)
 
@@ -195,11 +182,11 @@ def run_bandit(
 
     recommended_arm = int(np.argmax(empirical_means))
 
-    # simple regret: wrt the final regime
+    # simple regret wrt the final regime
     final_means = means_over_time[-1, :]
     simple_regret = final_means.max() - final_means[recommended_arm]
 
-    # "initial" optimal arm/mean
+    # initial optimal arm/mean for reference
     initial_means = means_over_time[0, :]
     initial_optimal_arm = int(initial_means.argmax())
     initial_optimal_mean = float(initial_means.max())
@@ -215,7 +202,7 @@ def run_bandit(
         "simple_regret": simple_regret,
         "optimal_pull_fraction": optimal_pull_fraction,
         "running_optimal_fraction": running_optimal_fraction,
-        "best_arms": best_arms,  # time-varying optimal arm
+        "best_arms": best_arms,
         "pull_counts": pull_counts,
         "empirical_means": empirical_means,
         "recommended_arm": recommended_arm,
@@ -227,15 +214,10 @@ def run_bandit(
         if algo_name is None:
             algo_name = "Algorithm"
         _plot_single_run(bandit, results, algo_name)
-
     return results
 
 
-def _plot_single_run(
-    bandit: GaussianBandit,
-    res,
-    algo_name = "Algorithm",
-):
+def _plot_single_run(bandit: GaussianBandit, res, algo_name = "Algorithm"):
     T = len(res["arms"])
     t = np.arange(1, T + 1)
 
@@ -275,17 +257,10 @@ def _plot_single_run(
     plt.show()
 
 
-def run_many(
-    bandit_constructor,
-    PolicyClass,
-    n_steps,
-    n_runs,
-    policy_name,
-    **policy_kwargs,
-):
+def run_many(bandit_constructor, PolicyClass, n_steps,n_runs, policy_name, **policy_kwargs):
     cumulative_regrets = np.zeros((n_runs, n_steps))
 
-    for r in range(n_runs):
+    for r in range(n_runs): # independent runs
         bandit = bandit_constructor()
         policy = PolicyClass(n_arms=bandit.K, **policy_kwargs)
         res = run_bandit(bandit, policy, n_steps)
@@ -294,19 +269,13 @@ def run_many(
     return policy_name, cumulative_regrets
 
 
-def run_many_stats(
-    bandit_constructor,
-    PolicyClass,
-    n_steps,
-    n_runs,
-    **kwargs,
-):
+def run_many_stats(bandit_constructor, PolicyClass, n_steps,n_runs,**kwargs):
     cum_regrets = []
     avg_regrets = []
     simple_regrets = []
     opt_fracs = []
 
-    for _ in range(n_runs):
+    for _ in range(n_runs): # collect stats for each run
         bandit = bandit_constructor()
         policy = PolicyClass(n_arms=bandit.K, **kwargs)
         res = run_bandit(bandit, policy, n_steps)
@@ -335,7 +304,7 @@ def plot_cumulative_regret_multi(results_dict):
         t = np.arange(1, n_steps + 1)
 
         mean_regret = cum_regrets.mean(axis=0)
-        lower = np.percentile(cum_regrets, 10, axis=0)
+        lower = np.percentile(cum_regrets, 10, axis=0) # confidence bands
         upper = np.percentile(cum_regrets, 90, axis=0)
 
         plt.plot(t, mean_regret, label=name)

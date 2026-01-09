@@ -12,105 +12,93 @@ class BernoulliBandit:
     """
 
     def __init__(self, true_means):
-        self.true_means = np.array(true_means, dtype=float)
-        self.K = len(self.true_means)
+        self.true_means = np.array(true_means, dtype=float) # list of success probabilities
+        self.K = len(self.true_means) # number of arms
 
     def pull(self, arm): # sample from chosen arm
         p = self.true_means[arm]
-        return np.random.rand() < p
+        return np.random.rand() < p # 0 or 1 reward
 
     @property
     def optimal_mean(self):
-        return float(np.max(self.true_means))
+        return float(np.max(self.true_means)) # highest success prob among arms
 
     @property
     def optimal_arm(self):
-        return int(np.argmax(self.true_means))
+        return int(np.argmax(self.true_means)) # index of best arm
 
-class Policy(Protocol):
-    def select_arm(self):
+class Policy(Protocol): # rules algos follow
+    def select_arm(self): # which arm to pull next round
         ...
 
-    def update(self, arm, reward):
+    def update(self, arm, reward): # learn from obs. reward
         ...
 
 
 @dataclass
 class UCB1:
     n_arms: int
-    c: float = 2.0  # exploration constant (2 is standard UCB1)
+    c: float = 2.0  # exploration constant
 
     def __post_init__(self):
-        self.counts = np.zeros(self.n_arms, dtype=int)  # N_i(t)
-        self.estimates = np.zeros(self.n_arms, dtype=float)  # \hat{\mu}_i(t)
+        self.counts = np.zeros(self.n_arms, dtype=int) # N_i(t)
+        self.estimates = np.zeros(self.n_arms, dtype=float) # \hat{\mu}_i(t)
         self.t = 0
 
     def select_arm(self):
         self.t += 1
 
-        # Play each arm once initially
+        # play each arm once initially
         for arm in range(self.n_arms):
             if self.counts[arm] == 0:
                 return arm
 
-        # Compute UCB index for each arm
-        ucb_values = self.estimates + np.sqrt(
-            (self.c * np.log(self.t)) / self.counts
-        )
-        return int(np.argmax(ucb_values))
+        # UCB index for each arm
+        ucb_values = self.estimates + np.sqrt((self.c * np.log(self.t)) / self.counts)
+        return int(np.argmax(ucb_values)) # arm with highest value
 
     def update(self, arm, reward):
         self.counts[arm] += 1
         n = self.counts[arm]
-        # Incremental mean update
-        self.estimates[arm] += (reward - self.estimates[arm]) / n
+        self.estimates[arm] += (reward - self.estimates[arm]) / n # incremental mean update
 
 
 @dataclass
 class ThompsonSamplingBernoulli:
     n_arms: int
-    alpha0: float = 1.0
+    alpha0: float = 1.0 # uniform prior Beta(1,1)
     beta0: float = 1.0
 
-    def __post_init__(self):
-        # Posterior parameters for each arm
+    def __post_init__(self): # posterior for each arm
         self.alpha = np.ones(self.n_arms) * self.alpha0  # successes + alpha0
         self.beta = np.ones(self.n_arms) * self.beta0  # failures + beta0
 
-    def select_arm(self):
-        # Sample a mean from each arm’s posterior
+    def select_arm(self): # sample a mean from each arm’s posterior
         samples = np.random.beta(self.alpha, self.beta)
-        return int(np.argmax(samples))
+        return int(np.argmax(samples)) # arm with highest samples value
 
-    def update(self, arm, reward): # rewards in [0,1]
+    def update(self, arm, reward): # Bayesian update
         self.alpha[arm] += reward
         self.beta[arm] += 1 - reward
 
-def run_bandit(
-        bandit,
-        policy,
-        n_steps,
-        show= False,
-        algo_name: str | None = None,
-):
+def run_bandit(bandit, policy, n_steps, show= False, algo_name: str | None = None):
     """
     Run a bandit algorithm on a given environment and compute metrics.
     For both stationary (BernoulliBandit) and non-stationary
     (NonStationaryBernoulliBandit with .get_means(t)) cases.
     """
     K = bandit.K
-    arms = np.zeros(n_steps, dtype=int)
-    rewards = np.zeros(n_steps, dtype=float)
+    arms = np.zeros(n_steps, dtype=int) # arm pulled at each step
+    rewards = np.zeros(n_steps, dtype=float) # received reward at each step
 
-    # store the active means at each time for regret & optimal-arm stats
+    # store the true means at each time for regret and optimal-arm stats
     means_over_time = np.zeros((n_steps, K), dtype=float)
 
     # --- main interaction loop
     for t in range(n_steps):
         arm = policy.select_arm()
 
-        # both stationary and non-stationary bandits
-        try:
+        try: # time argument (non-stationary)
             reward = bandit.pull(arm, t)
             means_t = bandit.get_means(t)
         except TypeError:
@@ -124,41 +112,35 @@ def run_bandit(
         rewards[t] = reward
         means_over_time[t, :] = means_t
 
-    # --- reward-based metrics
+    # metrics
     cumulative_rewards = np.cumsum(rewards)
     avg_reward = cumulative_rewards / np.arange(1, n_steps + 1)
 
-    # --- time-varying pseudo-regret
-    # best mean at each time
-    best_means = means_over_time.max(axis=1)
-    # mean of the arm actually played at each time
-    played_means = means_over_time[np.arange(n_steps), arms]
+    best_means = means_over_time.max(axis=1) # best mean at each time
+    played_means = means_over_time[np.arange(n_steps), arms] # mean of arm played
 
     instant_regret = best_means - played_means
     cumulative_regret = np.cumsum(instant_regret)
     avg_regret = cumulative_regret / np.arange(1, n_steps + 1)
 
-    # --- optimal arm statistics (time-varying optimal arm)
-    best_arms = means_over_time.argmax(axis=1)
-    is_optimal = (arms == best_arms)
-    optimal_pull_fraction = is_optimal.mean()
+    best_arms = means_over_time.argmax(axis=1) # best arm at each time
+    is_optimal = (arms == best_arms) # was correct arm chosen?
+    optimal_pull_fraction = is_optimal.mean() # optimal pulls fraction
     running_optimal_fraction = np.cumsum(is_optimal) / np.arange(1, n_steps + 1)
 
-    # --- arm usage + empirical means
-    pull_counts = np.bincount(arms, minlength=K)
-    reward_sums = np.bincount(arms, weights=rewards, minlength=K)
+    pull_counts = np.bincount(arms, minlength=K) # times arm i  was pulled
+    reward_sums = np.bincount(arms, weights=rewards, minlength=K) # reward from arm i
 
     empirical_means = np.zeros(K, dtype=float)
     nonzero = pull_counts > 0
-    empirical_means[nonzero] = reward_sums[nonzero] / pull_counts[nonzero]
+    empirical_means[nonzero] = reward_sums[nonzero] / pull_counts[nonzero] # emp mean for each arm
+    recommended_arm = int(np.argmax(empirical_means)) # recommended arm based on emp data
 
-    recommended_arm = int(np.argmax(empirical_means))
-
-    # simple regret: wrt the FINAL regime
+    # simple regret wrt the FINAL regime
     final_means = means_over_time[-1, :]
     simple_regret = final_means.max() - final_means[recommended_arm]
 
-    # "initial" optimal arm/mean
+    # initial optimal arm/mean for reference
     initial_means = means_over_time[0, :]
     initial_optimal_arm = int(initial_means.argmax())
     initial_optimal_mean = float(initial_means.max())
@@ -174,7 +156,7 @@ def run_bandit(
         "simple_regret": simple_regret,
         "optimal_pull_fraction": optimal_pull_fraction,
         "running_optimal_fraction": running_optimal_fraction,
-        "best_arms": best_arms,  # time-varying optimal arm
+        "best_arms": best_arms, # time-varying optimal arm
         "pull_counts": pull_counts,
         "empirical_means": empirical_means,
         "recommended_arm": recommended_arm,
@@ -186,15 +168,10 @@ def run_bandit(
         if algo_name is None:
             algo_name = "Algorithm"
         _plot_single_run(bandit, results, algo_name)
-
     return results
 
 
-def _plot_single_run(
-    bandit: BernoulliBandit,
-    res,
-    algo_name= "Algorithm",
-):
+def _plot_single_run(bandit: BernoulliBandit, res, algo_name= "Algorithm"):
     T = len(res["arms"])
     t = np.arange(1, T + 1)
 
@@ -234,17 +211,10 @@ def _plot_single_run(
     plt.show()
 
 
-def run_many(
-    bandit_constructor,
-    PolicyClass,
-    n_steps,
-    n_runs,
-    policy_name,
-    **policy_kwargs,
-):
+def run_many(bandit_constructor, PolicyClass, n_steps, n_runs, policy_name,**policy_kwargs):
     cumulative_regrets = np.zeros((n_runs, n_steps))
 
-    for r in range(n_runs):
+    for r in range(n_runs): # independent runs
         bandit = bandit_constructor()
         policy = PolicyClass(n_arms=bandit.K, **policy_kwargs)
         res = run_bandit(bandit, policy, n_steps)
@@ -253,22 +223,16 @@ def run_many(
     return policy_name, cumulative_regrets
 
 
-def run_many_stats(
-    bandit_constructor,
-    PolicyClass,
-    n_steps,
-    n_runs,
-    **kwargs,
-):
+def run_many_stats(bandit_constructor, PolicyClass, n_steps, n_runs, **kwargs):
     """
-    Run n_runs simulations and return average metrics.
+    Run n_runs simulations and return metrics.
     """
     cum_regrets = []
     avg_regrets = []
     simple_regrets = []
     opt_fracs = []
 
-    for _ in range(n_runs):
+    for _ in range(n_runs): # collect stats for each run
         bandit = bandit_constructor()
         policy = PolicyClass(n_arms=bandit.K, **kwargs)
         res = run_bandit(bandit, policy, n_steps)
@@ -297,8 +261,7 @@ def plot_cumulative_regret_multi(results_dict):
         t = np.arange(1, n_steps + 1)
 
         mean_regret = cum_regrets.mean(axis=0)
-        # 10th and 90th percentiles
-        lower = np.percentile(cum_regrets, 10, axis=0)
+        lower = np.percentile(cum_regrets, 10, axis=0) # confidence bands
         upper = np.percentile(cum_regrets, 90, axis=0)
 
         plt.plot(t, mean_regret, label=name)
@@ -326,18 +289,18 @@ class NonStationaryBernoulliBandit:
         self.switch_time = switch_time
         self.K = len(true_means_before)
 
-    def get_means(self, t):
+    def get_means(self, t): # choose correct means based on time
         if t < self.switch_time:
             return self.true_means_before
         else:
             return self.true_means_after
 
-    def pull(self, arm, t): #time-dependent sampling
+    def pull(self, arm, t): # time-dependent sampling
         p = self.get_means(t)[arm]
         return np.random.rand() < p
 
     @property
-    def true_means(self):
+    def true_means(self): # initial means
         return self.true_means_before
 
     @property

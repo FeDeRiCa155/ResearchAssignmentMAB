@@ -3,7 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
-from typing import Protocol, Callable
+from typing import Protocol
 
 # Environment
 class EnergyDispatchBandit:
@@ -11,30 +11,21 @@ class EnergyDispatchBandit:
     Each arm i is a dispatch option with realized cost:
         C_{i,t} = a_i + b_i * D_t + eps_{i,t}
     with:
-        D_t ~ N(m_D, s_D^2) i.i.d. (exogenous demand deviation)
-        eps_{i,t} ~ N(0, sigma_i^2) independent (option-specific noise)
-
+        D_t ~ N(m_D, s_D^2) exogenous demand deviation
+        eps_{i,t} ~ N(0, sigma_i^2) option-specific noise
     Bandit reward: X_{i,t} = - C_{i,t}
     """
-    def __init__(
-        self,
-        a,
-        b,
-        sigmas,
-        m_D= 0.0,
-        s_D = 1.0,
-    ):
-        self.a = np.array(a, dtype=float)
-        self.b = np.array(b, dtype=float)
-        self.sigmas = np.array(sigmas, dtype=float)
+    def __init__(self, a,b, sigmas, m_D= 0.0, s_D = 1.0):
+        self.a = np.array(a, dtype=float) # nominal cost
+        self.b = np.array(b, dtype=float) # exposure
+        self.sigmas = np.array(sigmas, dtype=float) # noise
         assert len(self.a) == len(self.b) == len(self.sigmas)
-        self.K = len(self.a)
+        self.K = len(self.a) # number of arms
+        self.m_D = float(m_D) # demand mean
+        self.s_D = float(s_D) # demand s.d.
 
-        self.m_D = float(m_D)
-        self.s_D = float(s_D)
-
-        # Expected cost and reward (stationary)
-        self._mu_cost = self.a + self.b * self.m_D
+        # Expected cost and reward
+        self._mu_cost = self.a + self.b * self.m_D # a_i + b_i * E(D_t) = a_i + b_i * m_D
         self._mu_reward = -self._mu_cost
 
     @property
@@ -49,10 +40,10 @@ class EnergyDispatchBandit:
     def gaps(self):
         mu = self.true_means
         mu_star = mu.max()
-        return mu_star - mu
+        return mu_star - mu # sub-optimal gaps \mu^* - \mu_i
 
     def pull(self, arm):
-        # ex. deviation sampled once per round (but only observed through the selected arm)
+        # deviation sampled once per round but only observed through the chosen arm
         D_t = np.random.normal(self.m_D, self.s_D)
         cost = self.a[arm] + self.b[arm] * D_t + np.random.normal(0.0, self.sigmas[arm])
         reward = -cost
@@ -71,7 +62,7 @@ class Policy(Protocol):
 class GaussianUCB:
     n_arms: int
     sigma: float
-    c: float = 1.0
+    c: float = 1.0 # exploration constant
 
     def __post_init__(self):
         self.counts = np.zeros(self.n_arms, dtype=int)
@@ -81,12 +72,13 @@ class GaussianUCB:
     def select_arm(self):
         self.t += 1
 
-        # play each arm once
+        # play each arm once initially
         for arm in range(self.n_arms):
             if self.counts[arm] == 0:
                 return arm
 
-        bonus = np.sqrt(2 * (self.sigma ** 2) * np.log(self.t) / self.counts)
+        # UCB index
+        bonus = np.sqrt(2 * (self.sigma ** 2) * np.log(self.t) / self.counts) # 2*\sigma^2 for variance
         ucb_values = self.estimates + self.c * bonus
         return int(np.argmax(ucb_values))
 
@@ -100,14 +92,14 @@ class GaussianUCB:
 class ThompsonSamplingGaussian:
     n_arms: int
     sigma: float
-    m0: float = 0.0
-    v0: float = 1.0
+    m0: float = 0.0 # prior mean
+    v0: float = 1.0 # prior variance
 
     def __post_init__(self):
         self.counts = np.zeros(self.n_arms, dtype=int)
         self.sum_rewards = np.zeros(self.n_arms, dtype=float)
 
-    def _posterior_params(self):
+    def _posterior_params(self): # posterior for each arm
         n = self.counts
         S = self.sum_rewards
         sigma2 = self.sigma ** 2
@@ -115,15 +107,16 @@ class ThompsonSamplingGaussian:
         tau0 = 1.0 / self.v0
         tau = 1.0 / sigma2
 
+        # bayesian posterior
         post_prec = tau0 + n * tau
-        v = 1.0 / post_prec
-        m = v * (tau0 * self.m0 + tau * S)
+        v = 1.0 / post_prec # posterior variance
+        m = v * (tau0 * self.m0 + tau * S) # posterior mean
         return m, v
 
     def select_arm(self):
         m, v = self._posterior_params()
         samples = np.random.normal(m, np.sqrt(v))
-        return int(np.argmax(samples))
+        return int(np.argmax(samples)) # arm with highest sample
 
     def update(self, arm, reward):
         self.counts[arm] += 1
@@ -131,16 +124,11 @@ class ThompsonSamplingGaussian:
 
 
 # Run
-def run_bandit(
-    bandit,
-    policy: Policy,
-    n_steps,
-):
+def run_bandit(bandit, policy: Policy, n_steps):
     K = bandit.K
-    arms = np.zeros(n_steps, dtype=int)
-    rewards = np.zeros(n_steps, dtype=float)
-
-    means_over_time = np.zeros((n_steps, K), dtype=float)
+    arms = np.zeros(n_steps, dtype=int) # arm pulled at each step
+    rewards = np.zeros(n_steps, dtype=float) # received reward at each step
+    means_over_time = np.zeros((n_steps, K), dtype=float) # true means
 
     for t in range(n_steps):
         arm = policy.select_arm()
@@ -151,6 +139,7 @@ def run_bandit(
         rewards[t] = reward
         means_over_time[t, :] = bandit.true_means # stationary
 
+    # metrics
     cumulative_rewards = np.cumsum(rewards)
     avg_reward = cumulative_rewards / np.arange(1, n_steps + 1)
 
@@ -194,14 +183,7 @@ def run_bandit(
     }
 
 
-def run_many(
-    bandit_constructor: Callable[[], object],
-    PolicyClass,
-    n_steps,
-    n_runs,
-    policy_name,
-    **policy_kwargs,
-):
+def run_many(bandit_constructor, PolicyClass, n_steps, n_runs, policy_name,**policy_kwargs):
     cumulative_regrets = np.zeros((n_runs, n_steps))
     for r in range(n_runs):
         bandit = bandit_constructor()
@@ -211,16 +193,13 @@ def run_many(
     return policy_name, cumulative_regrets
 
 
-def run_many_stats(
-    bandit_constructor: Callable[[], object],
-    PolicyClass,
-    n_steps,
-    n_runs,
-    **policy_kwargs,
-):
-    cum_regrets, avg_regrets, simple_regrets, opt_fracs = [], [], [], []
+def run_many_stats(bandit_constructor, PolicyClass, n_steps, n_runs,**policy_kwargs):
+    cum_regrets = []
+    avg_regrets = []
+    simple_regrets = []
+    opt_fracs = []
 
-    for _ in range(n_runs):
+    for _ in range(n_runs): # collect stats for each run
         bandit = bandit_constructor()
         policy = PolicyClass(n_arms=bandit.K, **policy_kwargs)
         res = run_bandit(bandit, policy, n_steps)
@@ -244,21 +223,17 @@ def run_many_stats(
 
 
 # Plots
-def theory_shaped_curve(gaps, t, k = 1.0):
+def theory_shaped_curve(gaps, t, k = 1.0): # theory curve for comparison
     gaps = np.asarray(gaps, dtype=float)
     mask = gaps > 1e-12
     if not np.any(mask):
         return np.zeros_like(t, dtype=float)
 
     coef = np.sum(1.0 / gaps[mask])
-    return k * coef * np.log1p(t)
+    return k * coef * np.log1p(t) # asympt. regret for UCB algos
 
 
-def plot_cumulative_regret_multi(
-    results_dict,
-    theory = None,
-    theory_label = "Gap-shaped reference",
-):
+def plot_cumulative_regret_multi(results_dict, theory = None, theory_label = "Gap-shaped reference"):
     plt.figure(figsize=(7, 4))
     for name, cum_regrets in results_dict.items():
         n_runs, n_steps = cum_regrets.shape
